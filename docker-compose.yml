@@ -1,0 +1,230 @@
+# ============================================================
+# DistroCommerce - Local Development Stack
+# ============================================================
+# Usage:
+#   docker compose up -d               # start all infra
+#   docker compose down -v             # stop + remove volumes
+#   docker compose logs -f dc-kafka    # tail kafka logs
+#
+# Ports:
+#   Postgres     :5432    Redis        :6379
+#   MongoDB      :27017   Kafka        :9092 (host) / :29092 (internal)
+#   Kafka UI     :8091    Prometheus   :9090
+#   Grafana      :3000    Jaeger UI    :16686
+#   Mailpit UI   :8025    Mailpit SMTP :1025
+#
+# Database strategy (local vs prod):
+#   Local:  1 Postgres instance (5 databases) + 1 MongoDB instance (2 databases)
+#   Prod:   separate RDS instances + MongoDB Atlas per service (true isolation)
+
+services:
+
+  # Postgres (single instance, multiple databases)
+  # Local dev uses one instance for simplicity.
+  # Each service connects to its own database with its own user.
+  # scripts/postgres-init.sql creates all databases on first start.
+  # In prod: separate RDS instances per service.
+
+  postgres:
+    image: postgres:18.3-alpine
+    container_name: dc-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql
+      - ./scripts/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # MongoDB (single instance, multiple databases)
+  # product_db       - product catalog, flexible attributes schema
+  # notification_db  - append-only notifications with TTL index
+  # Local dev uses one instance for simplicity.
+  # In prod: MongoDB Atlas clusters per service.
+
+  mongodb:
+    image: mongo:8.0
+    container_name: dc-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: mongo_admin
+      MONGO_INITDB_ROOT_PASSWORD: secret
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis
+  # Used by: bff-web (sessions), inventory (cache), product (cache),
+  # notification (dedup store), identity (refresh token store)
+  # appendonly yes - persist data across restarts (critical for bff-web sessions)
+
+  redis:
+    image: redis:8.6-alpine
+    container_name: dc-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Kafka
+  # Single broker for local dev.
+  # KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true" - for local convenience only.
+  # In prod: AllowAutoTopicCreation: false everywhere, topics created via Terraform.
+  #
+  # Two listeners:
+  #   PLAINTEXT://kafka:29092         - internal Docker network (container-to-container)
+  #   PLAINTEXT_HOST://localhost:9092 - host machine access (go run, tests)
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: dc-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=*"
+    volumes:
+      - zk-data:/var/lib/zookeeper/data
+      - zk-logs:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: dc-kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 6
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:v1.3.0
+    container_name: dc-kafka-ui
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8091:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: "true"
+
+  # Observability
+
+  prometheus:
+    image: prom/prometheus:v3.9.0
+    container_name: dc-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:12.3.0
+    container_name: dc-grafana
+    restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./configs/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./configs/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+  # Jaeger all-in-one - distributed tracing.
+  # COLLECTOR_OTLP_ENABLED enables built-in OTLP receiver on :4317.
+  # Services send traces directly here - no OTel Collector needed locally.
+  # In prod: OTel Collector deployed via Helm (monitoring/otel-collector-values.yaml)
+  # with tail-based sampling and AWS X-Ray export.
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    container_name: dc-jaeger
+    restart: unless-stopped
+    ports:
+      - "16686:16686" # Jaeger UI
+      - "4317:4317"   # OTLP gRPC - services send traces directly here
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+  # Dev Tools
+
+  mailpit:
+    image: axllent/mailpit:v1.29
+    container_name: dc-mailpit
+    restart: unless-stopped
+    ports:
+      - "1025:1025" # SMTP - notification service sends emails here
+      - "8025:8025" # Web UI - inspect sent emails
+
+volumes:
+  pg-data:
+  mongo-data:
+  redis-data:
+  kafka-data:
+  zk-data:
+  zk-logs:
+  prometheus-data:
+  grafana-data:

@@ -1,0 +1,50 @@
+# configs/prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: distrocommerce-local
+    env: local
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: [] # add alertmanager in prod
+
+scrape_configs:
+  - job_name: api-gateway
+    static_configs:
+      - targets: ["api-gateway:8080"]
+    metrics_path: /metrics
+
+  - job_name: user-sv
+    static_configs:
+      - targets: ["user-sv:8081"]
+
+  - job_name: order-sv
+    static_configs:
+      - targets: ["order-sv:8083"]
+
+  - job_name: payment-sv
+    static_configs:
+      - targets: ["payment-sv:8084"]
+
+  - job_name: product-sv
+    static_configs:
+      - targets: ["product-sv:8082"]
+
+  - job_name: inventory-sv
+    static_configs:
+      - targets: ["inventory-sv:8085"]
+
+  - job_name: notification-sv
+    static_configs:
+      - targets: ["notification-sv:8086"]
+
+  - job_name: identity-sv
+    static_configs:
+      - targets: ["identity-sv:8087"]
+
+  - job_name: bff-web
+    static_configs:
+      - targets: ["bff-web:8090"]
