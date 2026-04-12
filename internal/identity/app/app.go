@@ -8,16 +8,19 @@ import (
 	"time"
 
 	"github.com/hzhyvinskyi/distrocommerce/internal/identity/app/config"
+	"github.com/hzhyvinskyi/distrocommerce/pkg/database"
 	"github.com/hzhyvinskyi/distrocommerce/pkg/graceful"
 	"github.com/hzhyvinskyi/distrocommerce/pkg/health"
 	"github.com/hzhyvinskyi/distrocommerce/pkg/logger"
+	"github.com/hzhyvinskyi/distrocommerce/pkg/migrator"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
 
 // Run is the Composition Root for identity-sv
 //
 // Identity is a pure HTTP service - internal services do not call it directly.
-// All authentication flows go through api-gateway which validates JWTs locally
+// All authentication flows go through BFFs which validate JWTs locally
 // using JWKS, then forwards user claims via headers to internal services.
 func Run() error {
 	cfg, err := config.Load()
@@ -38,9 +41,36 @@ func Run() error {
 
 	ctx := context.Background()
 
+	db, err := database.NewPostgresPool(ctx, database.PoolConfig{
+		DSN:                   cfg.Postgres.DSN(),
+		MaxConns:              cfg.Postgres.MaxConns,
+		MinConns:              cfg.Postgres.MinConns,
+		MaxConnLifetime:       cfg.Postgres.MaxConnLifetime,
+		MaxConnLifetimeJitter: cfg.Postgres.MaxConnLifetimeJitter,
+		MaxConnIdleTime:       cfg.Postgres.MaxConnIdleTime,
+		HealthCheckPeriod:     cfg.Postgres.HealthCheckPeriod,
+	})
+	if err != nil {
+		return fmt.Errorf("init postgres: %w", err)
+	}
+	defer db.Close()
+
+	if err = migrator.Run(cfg.Postgres.DSN(), "file://migrations/identity", log); err != nil {
+		return fmt.Errorf("run migrator: %w", err)
+	}
+
+	redisClient := redis.NewClient(&redis.Options{
+		Addr:     cfg.Redis.Addr,
+		Password: cfg.Redis.Password,
+	})
+	if err = redisClient.Ping(ctx).Err(); err != nil {
+		return fmt.Errorf("ping redis: %w", err)
+	}
+	defer redisClient.Close() //nolint:errcheck
+
 	httpMux := http.NewServeMux()
 
-	healthChecker := health.New(cfg.App.Name, cfg.App.Version, nil, nil)
+	healthChecker := health.New(cfg.App.Name, cfg.App.Version, db, redisClient)
 	httpMux.HandleFunc("/healthz", healthChecker.LiveHandler())
 	httpMux.HandleFunc("/readyz", healthChecker.ReadyHandler())
 

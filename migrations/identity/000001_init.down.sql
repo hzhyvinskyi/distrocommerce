@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS identities;
+DROP EXTENSION IF EXISTS "citext";

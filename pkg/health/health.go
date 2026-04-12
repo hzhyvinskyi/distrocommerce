@@ -175,7 +175,7 @@ func (c *Checker) check(ctx context.Context) Response {
 
 	overall := StatusUp
 	for _, check := range components {
-		if check.Status == StatusUp {
+		if check.Status == StatusDown {
 			overall = StatusDown
 			break
 		}
@@ -213,7 +213,7 @@ func checkPostgres(ctx context.Context, db *pgxpool.Pool) Check {
 
 func checkRedis(ctx context.Context, redis *redis.Client) Check {
 	start := time.Now()
-	err := redis.Ping(ctx)
+	err := redis.Ping(ctx).Err()
 	latency := time.Since(start).Milliseconds()
 
 	if err != nil {
@@ -221,7 +221,7 @@ func checkRedis(ctx context.Context, redis *redis.Client) Check {
 			Component: "redis",
 			Status:    StatusDown,
 			LatencyMs: latency,
-			Error:     err.String(),
+			Error:     err.Error(),
 		}
 	}
 
