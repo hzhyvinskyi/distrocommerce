@@ -7,14 +7,19 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-playground/validator/v10"
+	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
+
 	"github.com/hzhyvinskyi/distrocommerce/internal/identity/app/config"
+	httpdelivery "github.com/hzhyvinskyi/distrocommerce/internal/identity/delivery/http"
+	"github.com/hzhyvinskyi/distrocommerce/internal/identity/infrastructure/postgres"
+	"github.com/hzhyvinskyi/distrocommerce/internal/identity/usecase"
 	"github.com/hzhyvinskyi/distrocommerce/pkg/database"
 	"github.com/hzhyvinskyi/distrocommerce/pkg/graceful"
 	"github.com/hzhyvinskyi/distrocommerce/pkg/health"
 	"github.com/hzhyvinskyi/distrocommerce/pkg/logger"
 	"github.com/hzhyvinskyi/distrocommerce/pkg/migrator"
-	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
 )
 
 // Run is the Composition Root for identity-sv
@@ -68,15 +73,33 @@ func Run() error {
 	}
 	defer redisClient.Close() //nolint:errcheck
 
+	// Infrastructure
+	identityRepo := postgres.NewIdentityRepository(db)
+
+	// Use Cases
+	registerUC := usecase.NewRegisterUseCase(identityRepo)
+
+	// HTTP Server
 	httpMux := http.NewServeMux()
 
 	healthChecker := health.New(cfg.App.Name, cfg.App.Version, db, redisClient)
-	httpMux.HandleFunc("/healthz", healthChecker.LiveHandler())
-	httpMux.HandleFunc("/readyz", healthChecker.ReadyHandler())
+	httpMux.HandleFunc("GET /healthz", healthChecker.LiveHandler())
+	httpMux.HandleFunc("GET /readyz", healthChecker.ReadyHandler())
+
+	validate := validator.New()
+
+	oauth2Handler := httpdelivery.NewOAuth2Handler(
+		registerUC,
+		validate,
+	)
+
+	httpMux.HandleFunc("POST /v1/auth/register", oauth2Handler.Register)
+
+	handler := httpdelivery.LoggingMiddleware(log)(httpMux)
 
 	httpSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTP.Port),
-		Handler:           httpMux,
+		Handler:           handler,
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      10 * time.Second,
