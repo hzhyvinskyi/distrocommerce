@@ -120,7 +120,7 @@ func Run() error {
 			"identity-sv HTTP listening",
 			zap.String("addr", httpSrv.Addr),
 		)
-		if err = httpSrv.ListenAndServe(); err != nil && !errors.Is(http.ErrServerClosed, err) {
+		if err = httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("http server error", zap.Error(err))
 		}
 	}()

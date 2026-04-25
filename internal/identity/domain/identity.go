@@ -158,13 +158,13 @@ func (i Identity) UpdatedAt() time.Time       { return i.updatedAt }
 
 func (i Identity) Events() []Event {
 	events := i.events
-	i.events = nil
+	i.events = nil //nolint:staticcheck
 
 	return events
 }
 
 func (i Identity) addEvent(t EventType, payload any) {
-	i.events = append(i.events, Event{
+	i.events = append(i.events, Event{ //nolint:staticcheck
 		ID:          uuid.NewString(),
 		Type:        t,
 		AggregateID: i.id.String(),

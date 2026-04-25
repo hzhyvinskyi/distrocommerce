@@ -354,7 +354,7 @@ func TestHTTPShutdownHook_ForceClosesOnDeadline(t *testing.T) {
 			return
 		}
 		conn.Write([]byte("GET / HTTP/1.1\r\nHost: test\r\n\r\n")) //nolint:errcheck
-		defer conn.Close()
+		defer conn.Close()                                         //nolint:errcheck
 	}()
 
 	// Wait until the handler is actually running before starting shutdown.

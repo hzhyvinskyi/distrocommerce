@@ -1,0 +1,132 @@
+# golangci-lint configuration for DistroCommerce.
+# Run: golangci-lint run ./... --timeout 5m
+# Docs: https://golangci-lint.run/usage/configuration/
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  # Analyse only changed files in CI for speed; full run on main
+  allow-parallel-runners: true
+
+linters:
+  default: none
+  enable:
+    # ── Correctness ───────────────────────────────────────────
+    - errcheck        # every error must be checked
+    # gosimple merged into staticcheck (S1* checks) in golangci-lint v2
+    - govet           # go vet checks (shadow, printf, etc.)
+    - staticcheck     # SA*, S*, ST*, QF*, S1* checks (includes gosimple)
+    - unused          # unused code
+
+    # ── Bugs ─────────────────────────────────────────────────
+    - bodyclose       # HTTP response body must be closed
+    # noctx removed in golangci-lint v2 — covered by staticcheck SA1012
+    - rowserrcheck    # sql.Rows.Err() must be checked
+    - sqlclosecheck   # sql.Rows/Stmt must be closed
+    # copylock merged into govet (copylocks analyzer) in golangci-lint v2
+    - nilerr          # return nil when err != nil
+    - nilnil          # returning (nil, nil) from error-returning func
+    - exhaustive      # switch on enum must be exhaustive
+
+    # ── Performance ───────────────────────────────────────────
+    - prealloc        # pre-allocate slices where possible
+    # ineffassign merged into staticcheck (SA4006) in golangci-lint v2
+
+    # ── Style ─────────────────────────────────────────────────
+    # goimports is a formatter in golangci-lint v2 — configured under formatters below
+    - gocritic        # opinionated but valuable checks
+    - misspell        # common English misspellings
+    - whitespace      # unnecessary blank lines
+    - unconvert       # unnecessary type conversions
+
+    # ── Security ──────────────────────────────────────────────
+    - gosec           # common security issues (G101–G602)
+
+    # ── Clean Architecture guardrails ─────────────────────────
+    # depguard removed — list-mode behaviour changed in golangci-lint v2.x
+    # and produces false positives on all files. Layer boundaries are enforced
+    # via code review and the usecase/domain import rules documented in ARCHITECTURE.md.
+
+linters-settings:
+  errcheck:
+    # These are intentional fire-and-forget calls we document explicitly
+    exclude-functions:
+      - (*go.uber.org/zap.Logger).Sync
+      - (*github.com/jackc/pgx/v5/pgxpool.Pool).Close
+
+  govet:
+    enable:
+      - shadow        # shadowed variables are a common bug source
+
+  gosec:
+    excludes:
+      - G104  # errors unhandled — covered by errcheck
+      - G304  # file path provided as taint input — false positives in config loading
+      - G706  # log injection via taint — false positive: config helpers use %q which
+      # safely quotes and escapes all special characters before logging
+    config:
+      G306: "0600"  # minimum file permissions
+
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - performance
+      - style
+    disabled-checks:
+      - commentedOutCode  # too noisy during development
+      - whyNoLint         # handled by nolintlint
+
+  misspell:
+    locale: US
+
+  staticcheck:
+    checks:
+      - "all"
+      - "-ST1000"  # package comment — too strict for internal packages
+      - "-ST1003"  # naming — conflicts with proto-generated code
+      - "-SA1019"  # deprecated — we'll handle these intentionally
+
+formatters:
+  enable:
+    - goimports     # gofmt + import grouping (formatter in golangci-lint v2)
+
+  settings:
+    goimports:
+      # Group imports: stdlib | external | internal
+      local-prefixes:
+        - github.com/yourname/distrocommerce
+
+issues:
+  # Don't report issues in generated files
+  exclude-dirs:
+    - vendor
+    - ".*"  # hidden dirs
+
+  exclude-files:
+    - ".*\\.pb\\.go$"       # protobuf generated
+    - ".*\\.pb\\.gw\\.go$"  # grpc-gateway generated
+    - "mock_.*\\.go$"       # mockgen generated
+
+  exclude-rules:
+    # Test files: relax some rules
+    - path: "_test\\.go"
+      linters:
+        - gosec      # test code doesn't need security hardening
+        - errcheck   # test assertions often ignore errors intentionally
+        - gocritic
+
+    # main.go: allow log.Fatal
+    - path: "cmd/.*/main\\.go"
+      linters:
+        - forbidigo
+
+    # Migration files read from disk — path taint is expected
+    - path: "pkg/migrator"
+      linters:
+        - gosec
+
+  # Show all issues, not just the first 3 per linter
+  max-issues-per-linter: 0
+  max-same-issues: 0

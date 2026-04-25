@@ -21,6 +21,9 @@ func mapUseCaseError(w http.ResponseWriter, err error) {
 		case usecase.ErrUnauthorized:
 			writeOAuthError(w, http.StatusUnauthorized, "unauthorized", appErr.Message)
 
+		case usecase.ErrInternal:
+			writeOAuthError(w, http.StatusInternalServerError, "internal_error", appErr.Message)
+
 		default:
 			writeOAuthError(w, http.StatusInternalServerError, "internal_error", "unexpected error")
 		}
